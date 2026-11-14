@@ -244,8 +244,8 @@ MAX_SAMPLES = 15              # per person
 # ---------------- Arduino car serial bridge ----------------
 # The Pi hosts the webpage and sends single-letter commands to the Arduino.
 # Arduino firmware must be flashed from Infrared_remote_control_car_serial.ino.
-SERIAL_PORT = os.environ.get("CAR_SERIAL_PORT", "/dev/ttyACM0")
-SERIAL_BAUD = int(os.environ.get("CAR_SERIAL_BAUD", "9600"))
+SERIAL_PORT = os.environ.get("CAR_SERIAL_PORT")
+SERIAL_BAUD = int(os.environ.get("CAR_BAUD", "9600"))
 CAR_SERIAL_TIMEOUT = 0.35
 _car_serial = None
 _car_serial_lock = threading.Lock()
@@ -253,60 +253,113 @@ _car_state = {"connected": False, "command": "S", "message": "Arduino not connec
 _car_last_command_at = 0.0
 
 
+def _resolve_serial_port():
+    if SERIAL_PORT:
+        return SERIAL_PORT
+    candidates = []
+    for pat in ["/dev/ttyACM*", "/dev/ttyUSB*"]:
+        candidates.extend(sorted(Path("/dev").glob(pat.split("*")[0] + "*")))
+    for p in candidates:
+        if p.exists():
+            return str(p)
+    return "/dev/ttyACM0"
+
+
 def _car_connect():
-    """Connect lazily so the face-scan webpage still starts if the Arduino is unplugged."""
-    global _car_serial
+    global _car_serial, SERIAL_PORT
     try:
         import serial
-        with _car_serial_lock:
-            if _car_serial is not None and _car_serial.is_open:
-                return True
+    except Exception as exc:
+        _car_state.update(connected=False, message=f"pyserial missing: {exc}")
+        return False
+
+    with _car_serial_lock:
+        if _car_serial is not None:
             try:
-                _car_serial = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=0.15,
-                                            write_timeout=0.3, exclusive=True)
-            except TypeError:  # older pyserial on some Pi OS releases
-                _car_serial = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=0.15,
-                                            write_timeout=0.3)
-            time.sleep(2.0)  # many Arduino boards reset when serial opens
+                if _car_serial.is_open:
+                    return True
+            except Exception:
+                pass
+            try:
+                _car_serial.close()
+            except Exception:
+                pass
+            _car_serial = None
+
+        port = _resolve_serial_port()
+        SERIAL_PORT = port
+        try:
+            try:
+                _car_serial = serial.Serial(
+                    port,
+                    SERIAL_BAUD,
+                    timeout=0.15,
+                    write_timeout=0.3,
+                    exclusive=True,
+                )
+            except TypeError:
+                _car_serial = serial.Serial(
+                    port,
+                    SERIAL_BAUD,
+                    timeout=0.15,
+                    write_timeout=0.3,
+                )
+            except serial.SerialException as exc:
+                _car_state.update(connected=False, message=f"Arduino unavailable: {exc}")
+                return False
+
+            time.sleep(1.2)
             _car_serial.reset_input_buffer()
-            _car_state.update(connected=True, message=f"Connected: {SERIAL_PORT}")
-            log(f"Arduino serial connected on {SERIAL_PORT} at {SERIAL_BAUD} baud")
+            _car_state.update(connected=True, message=f"Connected: {port}")
+            log(f"Arduino serial connected on {port} at {SERIAL_BAUD} baud")
             return True
+
     except Exception as exc:
         _car_state.update(connected=False, message=f"Arduino unavailable: {exc}")
         return False
 
 
 def car_command(command):
-    """Send F/B/L/R/S. Any failure is reported in /status."""
     global _car_last_command_at
     command = str(command).upper()
     if command not in {"F", "B", "L", "R", "S"}:
         return False, "Invalid car command"
+
     if not _car_connect():
         return False, _car_state["message"]
+
     try:
         with _car_serial_lock:
-            if _car_serial is None or not _car_serial.is_open:
-                _car_state.update(connected=False, message="Arduino serial port closed")
-                return False, _car_state["message"]
+            if _car_serial is None or not getattr(_car_serial, "is_open", False):
+                _car_serial = None
+                if not _car_connect():
+                    return False, _car_state["message"]
+
             _car_serial.write((command + "\n").encode("ascii"))
             _car_serial.flush()
+
         _car_last_command_at = time.monotonic()
-        _car_state.update(connected=True, command=command,
-                          message=f"Sent {command} to Arduino")
+        _car_state.update(connected=True, command=command, message=f"Sent {command} to Arduino")
         return True, _car_state["message"]
+
     except Exception as exc:
+        try:
+            if _car_serial is not None:
+                _car_serial.close()
+        except Exception:
+            pass
+        _car_serial = None
         _car_state.update(connected=False, message=f"Serial error: {exc}")
         return False, _car_state["message"]
 
 
 def _car_safety_watchdog():
-    # Stop the motors if a browser disappears or stops sending drive commands.
     while True:
         time.sleep(0.1)
-        if _car_state.get("command") != "S" and time.monotonic() - _car_last_command_at > CAR_SERIAL_TIMEOUT:
-            car_command("S")
+        if _car_state.get("command") != "S":
+            if time.monotonic() - _car_last_command_at > CAR_SERIAL_TIMEOUT:
+                if _car_connect():
+                    car_command("S")
 
 
 def _car_shutdown():
