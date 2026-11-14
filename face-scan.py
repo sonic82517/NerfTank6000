@@ -253,6 +253,16 @@ _car_state = {"connected": False, "command": "S", "message": "Arduino not connec
 _car_last_command_at = 0.0
 
 
+# ---------------- autonomous navigation (disabled by default) ----------------
+# This is intentionally off unless you explicitly enable it later.
+# The future turret camera should not drive the chassis navigation logic by itself;
+# it should stay independent from the chassis-fixed obstacle avoidance sensors.
+AUTO_NAV_ENABLED = False
+AUTO_NAV_STOP_DISTANCE_M = 0.30
+AUTO_NAV_CAUTIOUS_DISTANCE_M = 0.55
+AUTO_NAV_SIDE_CLEARANCE_M = 0.40
+
+
 def _resolve_serial_port():
     if SERIAL_PORT:
         return SERIAL_PORT
@@ -377,6 +387,80 @@ def _car_shutdown():
 atexit.register(_car_shutdown)
 
 
+# ------ future autonomous navigation logic ----
+# All nav logic is disabled by default and kept separate from turret face tracking.
+def get_nav_sensor_ranges():
+    """Return {'front': m, 'left': m, 'right': m} or None values when not connected.
+    This is intentionally inert until you wire an ultrasonic/ToF sensor board.
+    """
+    if not AUTO_NAV_ENABLED:
+        return {"front": None, "left": None, "right": None}
+    # TODO: connect HC-SR04 / VL53L0X / sensor board to the Pi or Arduino.
+    # When installed, replace this stub with a real read from GPIO or serial.
+    return {"front": None, "left": None, "right": None}
+
+
+def autonomous_navigation_step():
+    """Disabled by default. Safe fallback is STOP unless sensors are present and enabled."""
+    with lock:
+        enabled = app_state.get("nav_enabled", False)
+        if not enabled:
+            app_state["nav_status"] = "disabled"
+            app_state["nav_front"] = None
+            app_state["nav_left"] = None
+            app_state["nav_right"] = None
+            return "disabled"
+
+    ranges = get_nav_sensor_ranges()
+    front = ranges.get("front")
+    left = ranges.get("left")
+    right = ranges.get("right")
+
+    with lock:
+        app_state["nav_front"] = front
+        app_state["nav_left"] = left
+        app_state["nav_right"] = right
+
+    if front is None and left is None and right is None:
+        with lock:
+            app_state["nav_status"] = "waiting for sensors"
+        car_command("S")
+        return "waiting"
+
+    if front is not None and front < AUTO_NAV_STOP_DISTANCE_M:
+        with lock:
+            app_state["nav_status"] = "obstacle ahead"
+        if right is not None and (left is None or right >= left):
+            car_command("R")
+        elif left is not None and left > right:
+            car_command("L")
+        else:
+            car_command("S")
+        return "avoid"
+
+    if front is not None and front < AUTO_NAV_CAUTIOUS_DISTANCE_M:
+        with lock:
+            app_state["nav_status"] = "approaching obstacle"
+        if right is not None and (left is None or right >= left):
+            car_command("R")
+        elif left is not None and left > right:
+            car_command("L")
+        else:
+            car_command("S")
+        return "cautious"
+
+    if left is not None and left < AUTO_NAV_SIDE_CLEARANCE_M and right is not None and right < AUTO_NAV_SIDE_CLEARANCE_M:
+        with lock:
+            app_state["nav_status"] = "tight corridor"
+        car_command("S")
+        return "tight"
+
+    with lock:
+        app_state["nav_status"] = "clear"
+    car_command("F")
+    return "drive"
+
+
 PORT = 5000
 LCD_ENABLED = True
 LCD_ADDR = None               # None = auto-detect (usually 0x27 or 0x3F)
@@ -409,6 +493,11 @@ app_state = {
     "contacts": [],
     "stride": 2,
     "error": "",
+    "nav_enabled": False,    # default OFF until sensors are installed and tested
+    "nav_status": "disabled",
+    "nav_front": None,
+    "nav_left": None,
+    "nav_right": None,
 }
 db = {}                      # name -> {"features": (n,128) unit rows, "enemy": bool}
 enroll_job = None            # {"name","enemy","samples","t0","last"}
@@ -568,6 +657,7 @@ HTML_TEMPLATE = """
         <button id="btnAim" onclick="sendAction('/toggle_aim_mode')">AIM: CHEST</button>
         <button id="btnAuto" onclick="sendAction('/toggle_auto_target')">AUTO-TARGET: ON</button>
         <button onclick="sendAction('/lock_clear')">CLEAR LOCK</button>
+        <button id="btnNav" onclick="sendAction('/toggle_nav')">NAV: OFF</button>
     </div>
 
     <div class="panels">
@@ -860,6 +950,13 @@ HTML_TEMPLATE = """
             $('btnAim').innerText = `AIM: ${data.aim_mode.toUpperCase()}`;
             $('btnAuto').innerText = `AUTO-TARGET: ${data.auto_target ? 'ON' : 'OFF'}`;
             $('btnAuto').classList.toggle('active', data.auto_target);
+            const navBtn = $('btnNav');
+            if (navBtn) {
+                const enabled = !!(data.navigation && data.navigation.enabled);
+                navBtn.innerText = `NAV: ${enabled ? 'ON' : 'OFF'}`;
+                navBtn.classList.toggle('active', enabled);
+                navBtn.style.color = enabled ? 'var(--ok)' : 'var(--text-main)';
+            }
             renderContacts(data);
             renderRoster(data);
             const eb = $('errBanner');
@@ -1265,6 +1362,13 @@ def snapshot():
         job = enroll_job
         s["enroll"] = {"active": job is not None, "name": job["name"] if job else "",
                        "have": len(job["samples"]) if job else 0, "need": ENROLL_SAMPLES, "msg": enroll_msg}
+        s["navigation"] = {
+            "enabled": bool(app_state.get("nav_enabled", False)),
+            "status": app_state.get("nav_status", "disabled"),
+            "front": app_state.get("nav_front"),
+            "left": app_state.get("nav_left"),
+            "right": app_state.get("nav_right"),
+        }
         return s
 
 
@@ -1322,6 +1426,22 @@ def reload_ammo():
 def toggle_auto_target():
     with lock:
         app_state["auto_target"] = not app_state["auto_target"]
+    return "", 204
+
+
+@app.route("/toggle_nav", methods=["POST"])
+def toggle_nav():
+    with lock:
+        app_state["nav_enabled"] = not app_state.get("nav_enabled", False)
+        app_state["nav_status"] = "enabled" if app_state["nav_enabled"] else "disabled"
+        if not app_state["nav_enabled"]:
+            app_state["nav_front"] = None
+            app_state["nav_left"] = None
+            app_state["nav_right"] = None
+            try:
+                car_command("S")
+            except Exception:
+                pass
     return "", 204
 
 
@@ -1525,6 +1645,9 @@ def run_loop(cam, detector, recognizer):
         if sys_mode != prev_mode:
             tracks, last_tune = [], now
             prev_mode = sys_mode
+
+        if app_state.get("nav_enabled", False) and sys_mode == "auto":
+            autonomous_navigation_step()
 
         # --- MANUAL MODE (~30 FPS), unchanged apart from enrollment support ---
         if sys_mode == "manual":
