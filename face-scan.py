@@ -397,8 +397,8 @@ app_state = {
     "sys_mode": "manual",    # "manual" (~30fps) or "auto" (AI active)
     "aim_mode": "chest",     # "chest" or "head"
     "filter_mode": "normal", # "normal", "nv", "thermal"
-    "ammo": 30,
-    "max_ammo": 30,
+    "ammo": 8,
+    "max_ammo": 8,
     "firing": False,
     "fps": 0.0,
     "people": 0,
