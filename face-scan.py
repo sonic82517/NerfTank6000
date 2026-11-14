@@ -495,6 +495,31 @@ HTML_TEMPLATE = """
         input, select { background: #0a0d11; color: var(--text-main); border: 1px solid var(--border-color);
             padding: 8px; font-family: inherit; font-size: 12px; width: 100%; box-sizing: border-box; margin-bottom: 6px; }
         #enrollStatus { font-size: 11px; margin-top: 6px; color: var(--warn); min-height: 14px; }
+
+        .joystick-control { display: none; }
+        .joystick-base {
+            position: relative; width: 170px; height: 170px; margin: 12px auto;
+            border: 2px solid var(--border-color); border-radius: 50%;
+            background: radial-gradient(circle, #151d26, #090c10);
+            touch-action: none; user-select: none;
+        }
+        .joystick-base::before, .joystick-base::after {
+            content: ""; position: absolute; background: var(--border-color);
+        }
+        .joystick-base::before { width: 1px; height: 100%; left: 50%; }
+        .joystick-base::after { height: 1px; width: 100%; top: 50%; }
+        .joystick-knob {
+            position: absolute; left: 50%; top: 50%; z-index: 1;
+            width: 58px; height: 58px; border: 2px solid var(--accent);
+            border-radius: 50%; background: #004d55; transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+        .keyboard-help { text-align: center; margin-top: 8px; }
+
+        @media (max-width: 700px) {
+            .joystick-control { display: block; }
+            .drive-pad { max-width: 280px; }
+        }
     </style>
 </head>
 <body>
@@ -524,7 +549,15 @@ HTML_TEMPLATE = """
             <button type="button" data-car="B" aria-label="Reverse">▼ REVERSE</button>
             <span></span>
         </div>
-        <div class="drive-status">Hold a direction to drive; release to stop. Stop is also sent if the browser connection drops.</div>
+        <div class="joystick-control">
+            <div class="drive-status">MOBILE JOYSTICK — release to stop</div>
+            <div id="joystickBase" class="joystick-base" role="application" aria-label="Car joystick">
+                <div id="joystickKnob" class="joystick-knob"></div>
+            </div>
+        </div>
+        <div class="drive-status keyboard-help">
+            Keyboard: W/A/S/D or arrow keys to drive; release to stop.
+        </div>
     </div>
 
     <div class="control-deck">
@@ -575,44 +608,194 @@ HTML_TEMPLATE = """
     }
     function sendAction(endpoint) { post(endpoint); }
 
-    // Hold-to-drive controls; pointer release/cancel always sends STOP.
-    let activeDriveButton = null;
+    // Keyboard, hold-buttons, and mobile joystick share a stop-safe drive controller.
     let driveHeartbeat = null;
+    let driveSource = null;
+    let activeDriveButton = null;
+    let activeCommand = 'S';
+    let joystickVector = { x: 0, y: 0 };
+    const heldKeys = [];
+
     async function sendCarCommand(command) {
         const result = await post('/car/command', { command });
-        if (!result.ok && $('carStatus')) $('carStatus').innerText = result.error || 'Car command failed';
+        if (!result.ok && $('carStatus')) {
+            $('carStatus').innerText = result.error || 'Car command failed';
+        }
     }
+
+    function clearDriveHeartbeat() {
+        if (driveHeartbeat) {
+            clearInterval(driveHeartbeat);
+            driveHeartbeat = null;
+        }
+    }
+
+    function startCommand(command, source) {
+        clearDriveHeartbeat();
+        driveSource = source;
+        activeCommand = command;
+        sendCarCommand(command);
+        driveHeartbeat = setInterval(() => {
+            if (driveSource === source && activeCommand === command) {
+                sendCarCommand(command);
+            }
+        }, 150);
+    }
+
+    function startJoystick(x, y) {
+        clearDriveHeartbeat();
+        driveSource = 'joystick';
+        joystickVector = { x, y };
+        post('/joystick', { x, y, active: true });
+        driveHeartbeat = setInterval(() => {
+            if (driveSource === 'joystick') {
+                post('/joystick', {
+                    x: joystickVector.x,
+                    y: joystickVector.y,
+                    active: true
+                });
+            }
+        }, 150);
+    }
+
+    function stopDrive(source = null) {
+        if (source && driveSource !== source) return;
+        clearDriveHeartbeat();
+        driveSource = null;
+        activeDriveButton = null;
+        activeCommand = 'S';
+        joystickVector = { x: 0, y: 0 };
+        sendCarCommand('S');
+    }
+
     document.querySelectorAll('[data-car]').forEach(btn => {
         const command = btn.dataset.car;
+
         if (command === 'S') {
-            btn.addEventListener('click', () => { activeDriveButton = null; if (driveHeartbeat) { clearInterval(driveHeartbeat); driveHeartbeat = null; } sendCarCommand('S'); });
+            btn.addEventListener('click', () => stopDrive());
             return;
         }
+
         btn.addEventListener('pointerdown', e => {
             e.preventDefault();
             activeDriveButton = btn;
             try { btn.setPointerCapture(e.pointerId); } catch (_) {}
-            if (driveHeartbeat) clearInterval(driveHeartbeat);
-            sendCarCommand(command);
-            driveHeartbeat = setInterval(() => {
-                if (activeDriveButton === btn) sendCarCommand(command);
-            }, 150);
+            startCommand(command, 'button');
         });
+
         const release = () => {
-            if (activeDriveButton === btn) {
-                activeDriveButton = null;
-                if (driveHeartbeat) { clearInterval(driveHeartbeat); driveHeartbeat = null; }
-                sendCarCommand('S');
-            }
+            if (activeDriveButton === btn) stopDrive('button');
         };
         btn.addEventListener('pointerup', release);
         btn.addEventListener('pointercancel', release);
         btn.addEventListener('lostpointercapture', release);
         btn.addEventListener('contextmenu', e => e.preventDefault());
     });
-    window.addEventListener('blur', () => { activeDriveButton = null; if (driveHeartbeat) { clearInterval(driveHeartbeat); driveHeartbeat = null; } sendCarCommand('S'); });
+
+    const keyCommands = {
+        w: 'F', ArrowUp: 'F',
+        s: 'B', ArrowDown: 'B',
+        a: 'L', ArrowLeft: 'L',
+        d: 'R', ArrowRight: 'R'
+    };
+
+    function isTyping(target) {
+        return target instanceof Element &&
+            target.closest('input, textarea, select, [contenteditable="true"]');
+    }
+
+    function updateKeyboardDrive() {
+        if (driveSource !== 'keyboard') return;
+        const key = heldKeys[heldKeys.length - 1];
+        if (key) startCommand(keyCommands[key], 'keyboard');
+        else stopDrive('keyboard');
+    }
+
+    window.addEventListener('keydown', e => {
+        if (isTyping(e.target)) return;
+        const key = keyCommands[e.key] ? e.key :
+            (keyCommands[e.key.toLowerCase()] ? e.key.toLowerCase() : null);
+        if (!key) return;
+
+        e.preventDefault();
+        if (heldKeys.includes(key)) return;
+        heldKeys.push(key);
+        startCommand(keyCommands[key], 'keyboard');
+    });
+
+    window.addEventListener('keyup', e => {
+        const key = keyCommands[e.key] ? e.key :
+            (keyCommands[e.key.toLowerCase()] ? e.key.toLowerCase() : null);
+        if (!key) return;
+
+        const index = heldKeys.indexOf(key);
+        if (index !== -1) heldKeys.splice(index, 1);
+        updateKeyboardDrive();
+    });
+
+    const joystickBase = $('joystickBase');
+    const joystickKnob = $('joystickKnob');
+    let joystickPointer = null;
+
+    function moveJoystick(e) {
+        const rect = joystickBase.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const max = rect.width * 0.32;
+        let dx = e.clientX - cx;
+        let dy = e.clientY - cy;
+        const distance = Math.hypot(dx, dy);
+
+        if (distance > max) {
+            dx = dx / distance * max;
+            dy = dy / distance * max;
+        }
+
+        joystickKnob.style.transform =
+            `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+
+        const x = dx / max;
+        const y = -dy / max;
+        startJoystick(x, y);
+    }
+
+    function resetJoystick() {
+        joystickKnob.style.transform = 'translate(-50%, -50%)';
+        if (driveSource === 'joystick') stopDrive('joystick');
+    }
+
+    joystickBase.addEventListener('pointerdown', e => {
+        e.preventDefault();
+        joystickPointer = e.pointerId;
+        try { joystickBase.setPointerCapture(e.pointerId); } catch (_) {}
+        moveJoystick(e);
+    });
+    joystickBase.addEventListener('pointermove', e => {
+        if (e.pointerId === joystickPointer) moveJoystick(e);
+    });
+    joystickBase.addEventListener('pointerup', e => {
+        if (e.pointerId === joystickPointer) {
+            joystickPointer = null;
+            resetJoystick();
+        }
+    });
+    joystickBase.addEventListener('pointercancel', () => {
+        joystickPointer = null;
+        resetJoystick();
+    });
+    joystickBase.addEventListener('lostpointercapture', () => {
+        joystickPointer = null;
+        resetJoystick();
+    });
+
+    function stopForPageExit() {
+        heldKeys.length = 0;
+        stopDrive();
+    }
+    window.addEventListener('blur', stopForPageExit);
+    window.addEventListener('pagehide', stopForPageExit);
     document.addEventListener('visibilitychange', () => {
-        if (document.hidden) { activeDriveButton = null; if (driveHeartbeat) { clearInterval(driveHeartbeat); driveHeartbeat = null; } sendCarCommand('S'); }
+        if (document.hidden) stopForPageExit();
     });
 
     async function startEnroll() {
