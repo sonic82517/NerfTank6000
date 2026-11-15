@@ -273,37 +273,39 @@ def _car_connect():
         _car_state.update(connected=False, message=f"pyserial missing: {exc}")
         return False
 
-    with _car_serial_lock:
-        if _car_serial is not None:
-            try:
-                if _car_serial.is_open:
-                    return True
-            except Exception:
-                pass
-            try:
-                _car_serial.close()
-            except Exception:
-                pass
-            _car_serial = None
+    try:
+        with _car_serial_lock:
+            if _car_serial is not None:
+                try:
+                    if _car_serial.is_open:
+                        return True
+                except Exception:
+                    pass
+                try:
+                    _car_serial.close()
+                except Exception:
+                    pass
+                _car_serial = None
 
-        port = _resolve_serial_port()
-        SERIAL_PORT = port
-        try:
+            port = _resolve_serial_port()
+            SERIAL_PORT = port
+
             try:
-                _car_serial = serial.Serial(
-                    port,
-                    SERIAL_BAUD,
-                    timeout=0.15,
-                    write_timeout=0.3,
-                    exclusive=True,
-                )
-            except TypeError:
-                _car_serial = serial.Serial(
-                    port,
-                    SERIAL_BAUD,
-                    timeout=0.15,
-                    write_timeout=0.3,
-                )
+                try:
+                    _car_serial = serial.Serial(
+                        port,
+                        SERIAL_BAUD,
+                        timeout=0.15,
+                        write_timeout=0.3,
+                        exclusive=True,
+                    )
+                except TypeError:
+                    _car_serial = serial.Serial(
+                        port,
+                        SERIAL_BAUD,
+                        timeout=0.15,
+                        write_timeout=0.3,
+                    )
             except serial.SerialException as exc:
                 _car_state.update(connected=False, message=f"Arduino unavailable: {exc}")
                 return False
@@ -450,26 +452,49 @@ HTML_TEMPLATE = """
             --accent: #00e5ff; --accent-dim: #004d55; --danger: #ff334b;
             --warn: #ff8000; --ok: #2bd96b; --text-main: #c9d1d9; --text-dim: #6e7681;
         }
-        body { background-color: var(--bg-base); color: var(--text-main);
+        * { box-sizing: border-box; }
+        body {
+            background-color: var(--bg-base); color: var(--text-main);
             font-family: 'JetBrains Mono','Courier New',Courier,monospace; margin: 0; padding: 16px;
-            display: flex; flex-direction: column; align-items: center; }
-        header { width: 100%; max-width: 960px; display: flex; justify-content: space-between;
-            align-items: center; border-bottom: 1px solid var(--border-color);
-            padding-bottom: 8px; margin-bottom: 12px; }
+        }
+        .page-shell {
+            width: min(1400px, 100%); margin: 0 auto;
+        }
+        header {
+            width: 100%; display: flex; justify-content: space-between; align-items: center;
+            border-bottom: 1px solid var(--border-color); padding-bottom: 10px; margin-bottom: 12px;
+            gap: 12px; flex-wrap: wrap;
+        }
         h1 { font-size: 14px; letter-spacing: 3px; color: var(--accent); margin: 0; text-transform: uppercase; }
         h2 { font-size: 11px; letter-spacing: 2px; color: var(--accent); margin: 0 0 8px; }
         .telemetry-bar { font-size: 11px; color: var(--text-dim); letter-spacing: 1px; }
-        .err { width: 100%; max-width: 960px; color: #fff; background: #7a1624; font-size: 12px;
-            padding: 6px 10px; margin-bottom: 8px; box-sizing: border-box; display: none; }
-        .console-frame { background: var(--panel-bg); border: 1px solid var(--border-color);
-            padding: 8px; box-shadow: 0 4px 24px rgba(0,0,0,.6); max-width: 100%; }
-        .video-container { position: relative; line-height: 0; border: 1px solid var(--border-color); }
-        img { width: 100%; max-width: 960px; height: auto; display: block; cursor: crosshair; }
-        .control-deck { margin-top: 12px; display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; width: 100%; max-width: 960px; }
-        button { background: var(--panel-bg); color: var(--text-main); border: 1px solid var(--border-color);
+        .err {
+            width: 100%; color: #fff; background: #7a1624; font-size: 12px;
+            padding: 6px 10px; margin-bottom: 12px; box-sizing: border-box; display: none;
+        }
+        .panel {
+            background: var(--panel-bg); border: 1px solid var(--border-color);
+            padding: 12px; box-shadow: 0 4px 24px rgba(0,0,0,.5);
+        }
+        .hud-layout {
+            display: grid; grid-template-columns: minmax(0, 2.1fr) minmax(300px, 0.9fr);
+            gap: 16px; align-items: start;
+        }
+        .left-stack, .right-stack { display: flex; flex-direction: column; gap: 16px; }
+
+        .camera-panel { padding: 10px; }
+        .video-container { position: relative; line-height: 0; border: 1px solid var(--border-color); background: #060a0d; }
+        img { width: 100%; height: auto; display: block; cursor: crosshair; }
+
+        .control-deck {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(135px, 1fr));
+            gap: 8px; margin-top: 8px;
+        }
+        button {
+            background: var(--panel-bg); color: var(--text-main); border: 1px solid var(--border-color);
             padding: 10px 14px; font-size: 11px; font-family: inherit; letter-spacing: 1px; font-weight: 600;
-            cursor: pointer; text-transform: uppercase; transition: all .1s ease; text-align: center; }
+            cursor: pointer; text-transform: uppercase; transition: all .1s ease; text-align: center;
+        }
         button:hover { border-color: var(--accent); color: var(--accent); }
         button:active, button.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
         button.danger { border-color: #59252b; color: var(--danger); }
@@ -479,24 +504,17 @@ HTML_TEMPLATE = """
         button.enemy { border-color: #59252b; color: var(--danger); }
         button.friend { border-color: #1d5b36; color: var(--ok); }
         button.locked { border-color: var(--warn); color: var(--warn); background: rgba(255,128,0,.12); }
-        .drive-panel { margin-top: 12px; padding: 10px; width: 100%; max-width: 960px;
-            border: 1px solid var(--border-color); background: var(--panel-bg); }
-        .drive-pad { display: grid; grid-template-columns: repeat(3, minmax(70px, 110px));
-            gap: 7px; justify-content: center; margin: 10px auto; }
+
+        .drive-panel { }
+        .drive-pad {
+            display: grid; grid-template-columns: repeat(3, minmax(70px, 1fr));
+            gap: 7px; justify-content: center; margin: 10px auto; max-width: 320px;
+        }
         .drive-pad button { min-height: 48px; touch-action: none; user-select: none; }
         .drive-status { text-align: center; font-size: 11px; color: var(--text-dim); }
-        .panels { margin-top: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
-            gap: 8px; width: 100%; max-width: 960px; }
-        .panel { background: var(--panel-bg); border: 1px solid var(--border-color); padding: 10px; }
-        .list { display: flex; flex-direction: column; gap: 6px; min-height: 20px; }
-        .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; }
-        .row .btns { display: flex; gap: 4px; }
-        .dim { color: var(--text-dim); font-size: 11px; }
-        input, select { background: #0a0d11; color: var(--text-main); border: 1px solid var(--border-color);
-            padding: 8px; font-family: inherit; font-size: 12px; width: 100%; box-sizing: border-box; margin-bottom: 6px; }
-        #enrollStatus { font-size: 11px; margin-top: 6px; color: var(--warn); min-height: 14px; }
+        .keyboard-help { margin-top: 10px; }
 
-        .joystick-control { display: none; }
+        .joystick-control { display: block; margin-top: 12px; }
         .joystick-base {
             position: relative; width: 170px; height: 170px; margin: 12px auto;
             border: 2px solid var(--border-color); border-radius: 50%;
@@ -514,75 +532,110 @@ HTML_TEMPLATE = """
             border-radius: 50%; background: #004d55; transform: translate(-50%, -50%);
             pointer-events: none;
         }
-        .keyboard-help { text-align: center; margin-top: 8px; }
+
+        .panels {
+            margin-top: 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 12px; width: 100%;
+        }
+        .panel .list { display: flex; flex-direction: column; gap: 6px; min-height: 20px; }
+        .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; }
+        .row .btns { display: flex; gap: 4px; }
+        .dim { color: var(--text-dim); font-size: 11px; }
+        input, select {
+            background: #0a0d11; color: var(--text-main); border: 1px solid var(--border-color);
+            padding: 8px; font-family: inherit; font-size: 12px; width: 100%; box-sizing: border-box; margin-bottom: 6px;
+        }
+        #enrollStatus { font-size: 11px; margin-top: 6px; color: var(--warn); min-height: 14px; }
+
+        @media (max-width: 980px) {
+            .hud-layout { grid-template-columns: 1fr; }
+            .right-stack { order: 2; }
+            .left-stack { order: 1; }
+        }
 
         @media (max-width: 700px) {
-            .joystick-control { display: block; }
-            .drive-pad { max-width: 280px; }
+            body { padding: 10px; }
+            .control-deck { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .drive-pad { max-width: 260px; }
+            .panel { padding: 10px; }
         }
     </style>
 </head>
 <body>
-    <header>
-        <h1>[ TANK CONTROL SYSTEM v2.5 ]</h1>
-        <div class="telemetry-bar" id="status">CONNECTING...</div>
-    </header>
+    <div class="page-shell">
+        <header>
+            <h1>[ TANK CONTROL SYSTEM v2.5 ]</h1>
+            <div class="telemetry-bar" id="status">CONNECTING...</div>
+        </header>
 
-    <div id="errBanner" class="err"></div>
-    <div class="console-frame">
-        <div class="video-container">
-            <img id="video" src="{{ url_for('video_feed') }}" title="Click a contact to lock it">
-        </div>
-    </div>
+        <div id="errBanner" class="err"></div>
 
-    <div class="drive-panel">
-        <h2>ARDUINO CAR DRIVE</h2>
-        <div id="carStatus" class="drive-status">Checking Arduino serial connection…</div>
-        <div class="drive-pad">
-            <span></span>
-            <button type="button" data-car="F" aria-label="Forward">▲ FORWARD</button>
-            <span></span>
-            <button type="button" data-car="L" aria-label="Left">◀ LEFT</button>
-            <button type="button" data-car="S" class="danger" id="carStop">■ STOP</button>
-            <button type="button" data-car="R" aria-label="Right">RIGHT ▶</button>
-            <span></span>
-            <button type="button" data-car="B" aria-label="Reverse">▼ REVERSE</button>
-            <span></span>
-        </div>
-        <div class="joystick-control">
-            <div class="drive-status">MOBILE JOYSTICK — release to stop</div>
-            <div id="joystickBase" class="joystick-base" role="application" aria-label="Car joystick">
-                <div id="joystickKnob" class="joystick-knob"></div>
+        <div class="hud-layout">
+            <div class="left-stack">
+                <div class="panel camera-panel">
+                    <div class="video-container">
+                        <img id="video" src="{{ url_for('video_feed') }}" title="Click a contact to lock it">
+                    </div>
+                </div>
+            </div>
+
+            <div class="right-stack">
+                <div class="panel drive-panel">
+                    <h2>ARDUINO DRIVE</h2>
+                    <div id="carStatus" class="drive-status">Checking Arduino serial connection…</div>
+                    <div class="drive-pad">
+                        <span></span>
+                        <button type="button" data-car="F" aria-label="Forward">▲ FORWARD</button>
+                        <span></span>
+                        <button type="button" data-car="L" aria-label="Left">◀ LEFT</button>
+                        <button type="button" data-car="S" class="danger" id="carStop">■ STOP</button>
+                        <button type="button" data-car="R" aria-label="Right">RIGHT ▶</button>
+                        <span></span>
+                        <button type="button" data-car="B" aria-label="Reverse">▼ REVERSE</button>
+                        <span></span>
+                    </div>
+
+                    <div class="joystick-control">
+                        <div class="drive-status">MOBILE JOYSTICK — release to stop</div>
+                        <div id="joystickBase" class="joystick-base" role="application" aria-label="Car joystick">
+                            <div id="joystickKnob" class="joystick-knob"></div>
+                        </div>
+                    </div>
+
+                    <div class="drive-status keyboard-help">
+                        Keyboard: W/A/S/D or arrow keys to drive; release to stop.
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <h2>TACTICAL CONTROLS</h2>
+                    <div class="control-deck">
+                        <button id="btnSysMode" onclick="sendAction('/toggle_sys_mode')">SYS: MANUAL</button>
+                        <button id="btnFire" class="danger" onclick="sendAction('/fire')">FIRE WEAPON</button>
+                        <button onclick="sendAction('/reload')">RELOAD AMMO</button>
+                        <button id="btnFilter" onclick="sendAction('/toggle_filter')">FILTER: NORM</button>
+                        <button id="btnAim" onclick="sendAction('/toggle_aim_mode')">AIM: CHEST</button>
+                        <button id="btnAuto" onclick="sendAction('/toggle_auto_target')">AUTO-TARGET: ON</button>
+                        <button onclick="sendAction('/lock_clear')">CLEAR LOCK</button>
+                    </div>
+                </div>
             </div>
         </div>
-        <div class="drive-status keyboard-help">
-            Keyboard: W/A/S/D or arrow keys to drive; release to stop.
-        </div>
-    </div>
 
-    <div class="control-deck">
-        <button id="btnSysMode" onclick="sendAction('/toggle_sys_mode')">SYS: MANUAL</button>
-        <button id="btnFire" class="danger" onclick="sendAction('/fire')">FIRE WEAPON</button>
-        <button onclick="sendAction('/reload')">RELOAD AMMO</button>
-        <button id="btnFilter" onclick="sendAction('/toggle_filter')">FILTER: NORM</button>
-        <button id="btnAim" onclick="sendAction('/toggle_aim_mode')">AIM: CHEST</button>
-        <button id="btnAuto" onclick="sendAction('/toggle_auto_target')">AUTO-TARGET: ON</button>
-        <button onclick="sendAction('/lock_clear')">CLEAR LOCK</button>
-    </div>
-
-    <div class="panels">
-        <div class="panel"><h2>CONTACTS</h2><div id="contacts" class="list"></div>
-            <div class="dim" style="margin-top:8px">AUTO mode only. Click a person in the video, or press LOCK.</div></div>
-        <div class="panel"><h2>ROSTER</h2><div id="roster" class="list"></div></div>
-        <div class="panel"><h2>ENROLL</h2>
-            <input id="enrollName" maxlength="24" placeholder="name (letters, numbers, space _ . -)">
-            <select id="enrollRole"><option value="enemy">enroll as ENEMY</option><option value="friend">enroll as FRIEND</option></select>
-            <div class="control-deck" style="margin:0; grid-template-columns:1fr 1fr">
-                <button onclick="startEnroll()">ENROLL (5 SAMPLES)</button>
-                <button onclick="sendAction('/enroll_cancel')">CANCEL</button>
+        <div class="panels">
+            <div class="panel"><h2>CONTACTS</h2><div id="contacts" class="list"></div>
+                <div class="dim" style="margin-top:8px">AUTO mode only. Click a person in the video, or press LOCK.</div></div>
+            <div class="panel"><h2>ROSTER</h2><div id="roster" class="list"></div></div>
+            <div class="panel"><h2>ENROLL</h2>
+                <input id="enrollName" maxlength="24" placeholder="name (letters, numbers, space _ . -)">
+                <select id="enrollRole"><option value="enemy">enroll as ENEMY</option><option value="friend">enroll as FRIEND</option></select>
+                <div class="control-deck" style="margin:0; grid-template-columns:1fr 1fr">
+                    <button onclick="startEnroll()">ENROLL (5 SAMPLES)</button>
+                    <button onclick="sendAction('/enroll_cancel')">CANCEL</button>
+                </div>
+                <div id="enrollStatus"></div>
+                <div class="dim">Face the camera, 1-3 m away, good front light. Re-using a name adds samples.</div>
             </div>
-            <div id="enrollStatus"></div>
-            <div class="dim">Face the camera, 1-3 m away, good front light. Re-using a name adds samples.</div>
         </div>
     </div>
 
@@ -608,7 +661,7 @@ HTML_TEMPLATE = """
     }
     function sendAction(endpoint) { post(endpoint); }
 
-    // Keyboard, hold-buttons, and mobile joystick share a stop-safe drive controller.
+    // Keyboard, hold-buttons, and mobile/desktop joystick share a stop-safe drive controller.
     let driveHeartbeat = null;
     let driveSource = null;
     let activeDriveButton = null;
@@ -874,6 +927,7 @@ HTML_TEMPLATE = """
 </body>
 </html>
 """
+
 
 
 # ---------------- models / database ----------------
