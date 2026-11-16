@@ -248,7 +248,7 @@ SERIAL_PORT = os.environ.get("CAR_SERIAL_PORT")
 SERIAL_BAUD = int(os.environ.get("CAR_BAUD", "9600"))
 CAR_SERIAL_TIMEOUT = 0.35
 _car_serial = None
-_car_serial_lock = threading.Lock()
+_car_serial_lock = threading.RLock()
 _car_state = {"connected": False, "command": "S", "message": "Arduino not connected"}
 _car_last_command_at = 0.0
 
@@ -256,13 +256,14 @@ _car_last_command_at = 0.0
 def _resolve_serial_port():
     if SERIAL_PORT:
         return SERIAL_PORT
+    dev = Path("/dev")
     candidates = []
-    for pat in ["/dev/ttyACM*", "/dev/ttyUSB*"]:
-        candidates.extend(sorted(Path("/dev").glob(pat.split("*")[0] + "*")))
+    for pattern in ("ttyACM*", "ttyUSB*"):
+        candidates.extend(sorted(dev.glob(pattern)))
     for p in candidates:
         if p.exists():
             return str(p)
-    return "/dev/ttyACM0"
+    return str(dev / "ttyACM0")
 
 
 def _car_connect():
@@ -322,7 +323,7 @@ def _car_connect():
 
 
 def car_command(command):
-    global _car_last_command_at
+    global _car_serial, _car_last_command_at
     command = str(command).upper()
     if command not in {"F", "B", "L", "R", "S"}:
         return False, "Invalid car command"
