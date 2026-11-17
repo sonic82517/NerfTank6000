@@ -55,6 +55,11 @@ try:   # print immediately, even under systemd, so the terminal / journal is nev
 except Exception:
     pass
 
+try:
+    import RPi.GPIO as GPIO
+except Exception:
+    GPIO = None
+
 # ---------------- Wi-Fi hotspot (runs only for --setup-ap / --remove-ap) ----------------
 # Lives above the OpenCV/Flask imports on purpose, so `sudo python3 tank_hud.py --setup-ap`
 # works even if those libraries are only installed for your normal user.
@@ -240,6 +245,107 @@ ENROLL_GAP = 0.4              # s between samples
 ENROLL_TIMEOUT = 25           # s
 MAX_SAMPLES = 15              # per person
 
+# --- Raspberry Pi ultrasonic sensors (BCM numbering) ---
+ULTRASONIC_PINS = {
+    "front": {"trig": 20, "echo": 21},
+    "left": {"trig": 19, "echo": 26},
+    "right": {"trig": 16, "echo": 5},
+    "back": {"trig": 6, "echo": 13},
+}
+ULTRASONIC_CLEARANCE_CM = 25.0
+ULTRASONIC_TIMEOUT = 0.05
+ULTRASONIC_AVAILABLE = False
+
+if GPIO is not None:
+    try:
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setwarnings(False)
+        for sensor in ULTRASONIC_PINS.values():
+            GPIO.setup(sensor["trig"], GPIO.OUT)
+            GPIO.setup(sensor["echo"], GPIO.IN)
+        for sensor in ULTRASONIC_PINS.values():
+            GPIO.output(sensor["trig"], False)
+        time.sleep(0.05)
+        ULTRASONIC_AVAILABLE = True
+    except Exception as exc:
+        log(f"Ultrasonic sensor init failed: {exc}")
+        GPIO = None
+
+
+def read_ultrasonic_sensor(trig, echo):
+    if GPIO is None or not ULTRASONIC_AVAILABLE:
+        return None
+    try:
+        GPIO.output(trig, True)
+        time.sleep(0.00001)
+        GPIO.output(trig, False)
+
+        pulse_start = None
+        pulse_end = None
+        deadline = time.monotonic() + ULTRASONIC_TIMEOUT
+
+        while GPIO.input(echo) == 0 and time.monotonic() < deadline:
+            pass
+        if GPIO.input(echo) == 0:
+            return None
+        pulse_start = time.monotonic()
+
+        while GPIO.input(echo) == 1 and time.monotonic() < deadline:
+            pass
+        if GPIO.input(echo) == 1:
+            return None
+        pulse_end = time.monotonic()
+
+        duration = max(0.0, pulse_end - pulse_start)
+        return duration * 17150.0 / 2.0
+    except Exception as exc:
+        log(f"Ultrasonic read failed on trig={trig} echo={echo}: {exc}")
+        return None
+
+
+def read_ultrasonic_map():
+    if not ULTRASONIC_AVAILABLE:
+        return {}
+    out = {}
+    for name, pins in ULTRASONIC_PINS.items():
+        out[name] = read_ultrasonic_sensor(pins["trig"], pins["echo"])
+    return out
+
+
+def apply_ultrasonic_avoidance():
+    if not ULTRASONIC_AVAILABLE:
+        return False
+
+    distances = read_ultrasonic_map()
+    if not distances:
+        return False
+
+    front = distances.get("front")
+    left = distances.get("left")
+    right = distances.get("right")
+    back = distances.get("back")
+
+    if front is not None and front < ULTRASONIC_CLEARANCE_CM:
+        if (left if left is not None else 999.0) >= (right if right is not None else 999.0):
+            car_command("L")
+        else:
+            car_command("R")
+        return True
+
+    if left is not None and left < ULTRASONIC_CLEARANCE_CM * 0.8:
+        car_command("R")
+        return True
+
+    if right is not None and right < ULTRASONIC_CLEARANCE_CM * 0.8:
+        car_command("L")
+        return True
+
+    if back is not None and back < 18.0:
+        car_command("F")
+        return True
+
+    return False
+
 
 # ---------------- Arduino car serial bridge ----------------
 # The Pi hosts the webpage and sends single-letter commands to the Arduino.
@@ -412,6 +518,7 @@ app_state = {
     "contacts": [],
     "stride": 2,
     "error": "",
+    "sonar": {},
 }
 db = {}                      # name -> {"features": (n,128) unit rows, "enemy": bool}
 enroll_job = None            # {"name","enemy","samples","t0","last"}
@@ -1320,6 +1427,10 @@ def snapshot():
         job = enroll_job
         s["enroll"] = {"active": job is not None, "name": job["name"] if job else "",
                        "have": len(job["samples"]) if job else 0, "need": ENROLL_SAMPLES, "msg": enroll_msg}
+        if ULTRASONIC_AVAILABLE:
+            s["sonar"] = {n: round(v, 1) if v is not None else None for n, v in read_ultrasonic_map().items()}
+        else:
+            s["sonar"] = {}
         return s
 
 
@@ -1596,6 +1707,9 @@ def run_loop(cam, detector, recognizer):
             continue
 
         # --- AUTO MODE ---
+        if ULTRASONIC_AVAILABLE:
+            apply_ultrasonic_avoidance()
+
         process = frame_idx % stride == 0
         frame_idx += 1
 
