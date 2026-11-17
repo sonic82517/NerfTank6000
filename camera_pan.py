@@ -1,10 +1,17 @@
-"""Safe pan control for a camera/sensor mount (not a launcher).
+"""Bounded Raspberry Pi servo control for a pan-mounted camera/sensor.
 
-Wire a standard positional servo's signal to BCM GPIO18 (physical pin 12).
-Power the servo from an appropriate external 5 V supply and connect its ground
-and the Raspberry Pi ground together. Do not power a servo from a GPIO pin.
+This module is intentionally an independent manual pan utility; it does not
+connect servo motion to face recognition, target locking, or firing controls.
 
-This module deliberately only provides bounded camera/sensor pan positioning.
+Wiring (standard positional servo):
+  * signal -> BCM GPIO18 (physical pin 12)
+  * V+ -> suitable external regulated supply for the servo (often 5 V)
+  * GND -> external supply ground and Raspberry Pi GND (common ground)
+
+Never power a servo from a Pi GPIO pin. Check your servo's voltage/current
+requirements and calibrate the travel limits to avoid binding the mount.
+
+Run `python3 camera_pan.py` on a Raspberry Pi for a simple interactive test.
 """
 import time
 
@@ -22,13 +29,15 @@ SERVO_MAX_DUTY = 12.5
 
 
 class CameraPan:
-    """Bounded servo control for panning a camera or non-weapon sensor."""
+    """Set bounded absolute pan positions for a camera or sensor mount."""
 
     def __init__(self, pin=SERVO_PIN, enabled=True):
+        if GPIO is None and enabled:
+            raise RuntimeError("RPi.GPIO is unavailable; run this on Raspberry Pi OS and install RPi.GPIO")
         self.pin = pin
         self.pwm = None
         self.angle = SERVO_CENTER_ANGLE
-        self.enabled = bool(enabled and GPIO is not None)
+        self.enabled = bool(enabled)
         if self.enabled:
             GPIO.setmode(GPIO.BCM)
             GPIO.setup(self.pin, GPIO.OUT)
@@ -48,7 +57,7 @@ class CameraPan:
             self.pwm.ChangeDutyCycle(0)
 
     def set_angle(self, angle):
-        """Set an absolute angle, clamped to the configured safe travel range."""
+        """Move to an angle clamped to the configured software travel limits."""
         self.angle = self._clamp(angle, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE)
         if not self.enabled or self.pwm is None:
             return self.angle
@@ -57,26 +66,6 @@ class CameraPan:
         time.sleep(0.12)
         self._release_signal()
         return self.angle
-
-    def follow_horizontal(self, normalized_x, max_step=4.0, deadband=0.06):
-        """Pan toward a detected face center (x normalized from 0.0 to 1.0).
-
-        Call with the face center from the camera frame. The deadband avoids
-        jitter near the center, and max_step limits movement per update.
-        """
-        try:
-            x = float(normalized_x)
-        except (TypeError, ValueError):
-            return self.angle
-        x = self._clamp(x, 0.0, 1.0)
-        error = x - 0.5
-        if abs(error) <= deadband:
-            return self.angle
-        # Image-left/right to servo direction may depend on mounting; reverse
-        # the sign here if the camera pans away from the face.
-        desired = SERVO_CENTER_ANGLE - error * 70.0
-        delta = self._clamp(desired - self.angle, -max_step, max_step)
-        return self.set_angle(self.angle + delta)
 
     def center(self):
         return self.set_angle(SERVO_CENTER_ANGLE)
@@ -94,3 +83,33 @@ class CameraPan:
             except Exception:
                 pass
         self.enabled = False
+
+
+def main():
+    """Interactive manual test; enter an angle or `c` to center, `q` to quit."""
+    pan = CameraPan()
+    print(f"Servo ready on BCM GPIO{SERVO_PIN}. Allowed range: {SERVO_MIN_ANGLE:.0f}-{SERVO_MAX_ANGLE:.0f} degrees.")
+    print("Enter an angle, 'c' to center, or 'q' to quit.")
+    try:
+        while True:
+            raw = input("Pan> ").strip().lower()
+            if raw in {"q", "quit", "exit"}:
+                break
+            if raw in {"c", "center"}:
+                angle = pan.center()
+            else:
+                try:
+                    angle = pan.set_angle(float(raw))
+                except ValueError:
+                    print("Enter a numeric angle, c, or q.")
+                    continue
+            print(f"Position: {angle:.1f} degrees")
+    except (KeyboardInterrupt, EOFError):
+        print()
+    finally:
+        pan.close()
+        print("Servo GPIO cleaned up.")
+
+
+if __name__ == "__main__":
+    main()
