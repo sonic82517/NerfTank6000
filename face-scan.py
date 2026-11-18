@@ -1654,6 +1654,9 @@ def run_loop(cam, detector, recognizer):
     prev_mode = "manual"
     fps, t_prev = 0.0, time.time()
     last_tune = last_down = time.time()
+    if target is not None:
+        error_x = tx - fcx
+        error_y = ty - fcy
 
     log("Tracking loop running.")
     first_frame = True
@@ -2025,11 +2028,11 @@ def lcd_loop(lcd):
 
 
 # ---------------- supervisor + main ----------------
-def tracking_thread():
+def tracking_thread(pan=None):
     """Restarts the tracking loop if it ever crashes, and reports why."""
     while True:
         try:
-            tracking_loop()
+            tracking_loop(pan)
         except Exception as e:
             traceback.print_exc()
             msg = f"{type(e).__name__}: {e}" if not isinstance(e, RuntimeError) else str(e)
@@ -2039,6 +2042,7 @@ def tracking_thread():
 
 
 def main():
+    pan = CameraPan()
     log(f"Tank HUD v2.6 starting (Python {sys.version.split()[0]}, OpenCV {cv2.__version__}, NumPy {np.__version__})")
     db.update(load_db())
     log(f"{len(db)} enrolled face(s) loaded from {DB_PATH}")
@@ -2047,13 +2051,16 @@ def main():
     if LCD_ENABLED:
         lcd = LCD2004(LCD_ADDR, LCD_BUS)
         threading.Thread(target=lcd_loop, args=(lcd,), daemon=True).start()
-    threading.Thread(target=tracking_thread, daemon=True).start()
+
+    # Start tracking once, passing the pan controller.
+    threading.Thread(target=tracking_thread, args=(pan,), daemon=True).start()
     threading.Thread(target=_car_safety_watchdog, daemon=True, name="car-safety-watchdog").start()
 
     ips = get_ips()
     log("Web interface on:" if ips else "Web interface on port %d (no network address yet)" % PORT)
     for iface, ip in ips:
         log(f"    http://{ip}:{PORT}   ({iface})")
+
     try:
         app.run(host="0.0.0.0", port=PORT, threaded=True)
     except OSError as e:
@@ -2061,13 +2068,14 @@ def main():
         set_error("web", reason)
         log(f"Web server could not start: {reason}")
         log(f"Find what is using it with:  sudo ss -ltnp | grep {PORT}")
-        time.sleep(4)                                  # let the LCD show it
+        time.sleep(4)
         sys.exit(1)
     except KeyboardInterrupt:
         pass
     finally:
         if lcd:
             lcd.show(["TANK HUD", "stopped", "", ""])
+        pan.close()
 
 
 if __name__ == "__main__":
