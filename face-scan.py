@@ -42,6 +42,7 @@ import traceback
 import urllib.request
 from collections import Counter, deque
 from pathlib import Path
+from camera_pan import CameraPan
 
 import os
 import shutil
