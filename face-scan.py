@@ -314,8 +314,34 @@ def read_ultrasonic_map():
 
 
 def apply_ultrasonic_avoidance():
-    if not ULTRASONIC_AVAILABLE:
-        return False
+    AUTO_FRONT_CLEARANCE_CM = 40.0
+    AUTO_SIDE_CLEARANCE_CM = 25.0
+    if faces:
+        camera_stop_until = now + 1.0
+
+    def choose_auto_drive_command(distances, face_seen):
+        # Face detection is only a stop condition; it is not used to pursue anyone.
+        if face_seen or not ULTRASONIC_AVAILABLE:
+            return "S"
+    
+        front = distances.get("front")
+        if front is None:
+            return "S"
+        if front >= AUTO_FRONT_CLEARANCE_CM:
+            return "F"
+    
+        left = distances.get("left")
+        right = distances.get("right")
+        left_clear = left is not None and left >= AUTO_SIDE_CLEARANCE_CM
+        right_clear = right is not None and right >= AUTO_SIDE_CLEARANCE_CM
+    
+        if left_clear and right_clear:
+            return "L" if left >= right else "R"
+        if left_clear:
+            return "L"
+        if right_clear:
+            return "R"
+        return "S"
 
     distances = read_ultrasonic_map()
     if not distances:
@@ -520,6 +546,7 @@ app_state = {
     "stride": 2,
     "error": "",
     "sonar": {},
+    "auto_drive": False,
 }
 db = {}                      # name -> {"features": (n,128) unit rows, "enemy": bool}
 enroll_job = None            # {"name","enemy","samples","t0","last"}
@@ -726,6 +753,7 @@ HTML_TEMPLATE = """
                         <button id="btnAim" onclick="sendAction('/toggle_aim_mode')">AIM: CHEST</button>
                         <button id="btnAuto" onclick="sendAction('/toggle_auto_target')">AUTO-TARGET: ON</button>
                         <button onclick="sendAction('/lock_clear')">CLEAR LOCK</button>
+                        <button id="btnAutoDrive" onclick="sendAction('/toggle_auto_drive')">AUTO DRIVE: OFF</button>
                     </div>
                 </div>
             </div>
@@ -1012,6 +1040,8 @@ HTML_TEMPLATE = """
             if ($('carStatus')) {
                 $('carStatus').innerText = `ARDUINO: ${data.car.connected ? 'CONNECTED' : 'DISCONNECTED'} | ${data.car.message}`;
                 $('carStatus').style.color = data.car.connected ? 'var(--ok)' : 'var(--danger)';
+                $('btnAutoDrive').innerText = `AUTO DRIVE: ${data.auto_drive ? 'ON' : 'OFF'}`;
+                $('btnAutoDrive').classList.toggle('active', data.auto_drive);
             }
             $('status').innerText =
                 `FPS: ${data.fps} | AMMO: ${data.ammo}/${data.max_ammo} | CONTACTS: ${data.people} | LOCK: ${data.target}`;
@@ -1630,6 +1660,20 @@ def car_control():
 def video_feed():
     return Response(gen_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
+@app.route("/toggle_auto_drive", methods=["POST"])
+def toggle_auto_drive():
+    with lock:
+        enabling = not app_state["auto_drive"]
+        if enabling and app_state["sys_mode"] != "auto":
+            return jsonify(error="Switch SYS to AUTO first"), 409
+        if enabling and not ULTRASONIC_AVAILABLE:
+            return jsonify(error="Ultrasonic sensors are unavailable"), 503
+        app_state["auto_drive"] = enabling
+
+    if not enabling:
+        car_command("S")
+    return "", 204
+
 
 # ---------------- main loop ----------------
 def tracking_loop():
@@ -1653,6 +1697,8 @@ def run_loop(cam, detector, recognizer):
     frame_idx = proc_idx = last_idx = 0
     stride = 2
     prev_mode = "manual"
+    camera_stop_until = 0.0
+    auto_drive_was_active = False
     fps, t_prev = 0.0, time.time()
     last_tune = last_down = time.time()
     if target is not None:
