@@ -2079,7 +2079,7 @@ def tracking_thread(pan=None):
     """Restarts the tracking loop if it ever crashes, and reports why."""
     while True:
         try:
-            tracking_loop(pan)
+            tracking_loop()
         except Exception as e:
             traceback.print_exc()
             msg = f"{type(e).__name__}: {e}" if not isinstance(e, RuntimeError) else str(e)
