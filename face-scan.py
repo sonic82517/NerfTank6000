@@ -223,7 +223,7 @@ MODELS = {
 
 # --- Camera & precision settings ---
 CAM_W, CAM_H = 960, 540
-AUTO_PROCESS_WIDTH = 480      # detector input width (was 400): more reliable on small faces
+AUTO_PROCESS_WIDTH = 400    # detector input width (was 400): more reliable on small faces
 FACE_SCORE = 0.60
 TARGET_AUTO_FPS = 15          # auto mode adapts detection frequency to hover around this
 STRIDE_MIN, STRIDE_MAX = 1, 4 # detect every Nth frame (Kalman coasts in between)
@@ -272,6 +272,18 @@ if GPIO is not None:
         log(f"Ultrasonic sensor init failed: {exc}")
         GPIO = None
 
+sonar_cache = {name: None for name in ULTRASONIC_PINS}
+sonar_cache_lock = threading.Lock()
+
+
+def sonar_reader_loop():
+    while True:
+        if ULTRASONIC_AVAILABLE:
+            readings = read_ultrasonic_map()
+            with sonar_cache_lock:
+                sonar_cache.update(readings)
+        time.sleep(0.2)
+
 
 def read_ultrasonic_sensor(trig, echo):
     if GPIO is None or not ULTRASONIC_AVAILABLE:
@@ -313,40 +325,47 @@ def read_ultrasonic_map():
     return out
 
 
-def apply_ultrasonic_avoidance():
-    if not ULTRASONIC_AVAILABLE:
-        return False
 
-    distances = read_ultrasonic_map()
-    if not distances:
-        return False
+def choose_auto_drive_command(distances, face_seen=False):
+    """Return F, L, R, or S based on ultrasonic readings."""
+    if face_seen or not ULTRASONIC_AVAILABLE:
+        return "S"
 
     front = distances.get("front")
+    if front is None:
+        return "S"
+
+    if front >= 40.0:
+        return "F"
+
     left = distances.get("left")
     right = distances.get("right")
-    back = distances.get("back")
 
-    if front is not None and front < ULTRASONIC_CLEARANCE_CM:
-        if (left if left is not None else 999.0) >= (right if right is not None else 999.0):
-            car_command("L")
-        else:
-            car_command("R")
-        return True
+    left_clear = left is not None and left >= 25.0
+    right_clear = right is not None and right >= 25.0
 
-    if left is not None and left < ULTRASONIC_CLEARANCE_CM * 0.8:
-        car_command("R")
-        return True
+    if left_clear and right_clear:
+        return "L" if left >= right else "R"
+    if left_clear:
+        return "L"
+    if right_clear:
+        return "R"
+    return "S"
 
-    if right is not None and right < ULTRASONIC_CLEARANCE_CM * 0.8:
-        car_command("L")
-        return True
 
-    if back is not None and back < 18.0:
-        car_command("F")
-        return True
 
-    return False
+def apply_ultrasonic_avoidance(face_seen=False):
+    distances = read_ultrasonic_map() if ULTRASONIC_AVAILABLE else {}
+    command = choose_auto_drive_command(distances, face_seen)
+    ok, message = car_command(command)
 
+    if not ok:
+        set_error("car", message)
+    else:
+        clear_error("car")
+
+    return command
+   
 
 # ---------------- Arduino car serial bridge ----------------
 # The Pi hosts the webpage and sends single-letter commands to the Arduino.
@@ -520,6 +539,7 @@ app_state = {
     "stride": 2,
     "error": "",
     "sonar": {},
+    "auto_drive": False,
 }
 db = {}                      # name -> {"features": (n,128) unit rows, "enemy": bool}
 enroll_job = None            # {"name","enemy","samples","t0","last"}
@@ -726,6 +746,7 @@ HTML_TEMPLATE = """
                         <button id="btnAim" onclick="sendAction('/toggle_aim_mode')">AIM: CHEST</button>
                         <button id="btnAuto" onclick="sendAction('/toggle_auto_target')">AUTO-TARGET: ON</button>
                         <button onclick="sendAction('/lock_clear')">CLEAR LOCK</button>
+                        <button id="btnAutoDrive" onclick="sendAction('/toggle_auto_drive')">AUTO DRIVE: OFF</button>
                     </div>
                 </div>
             </div>
@@ -1012,6 +1033,8 @@ HTML_TEMPLATE = """
             if ($('carStatus')) {
                 $('carStatus').innerText = `ARDUINO: ${data.car.connected ? 'CONNECTED' : 'DISCONNECTED'} | ${data.car.message}`;
                 $('carStatus').style.color = data.car.connected ? 'var(--ok)' : 'var(--danger)';
+                $('btnAutoDrive').innerText = `AUTO DRIVE: ${data.auto_drive ? 'ON' : 'OFF'}`;
+                $('btnAutoDrive').classList.toggle('active', data.auto_drive);
             }
             $('status').innerText =
                 `FPS: ${data.fps} | AMMO: ${data.ammo}/${data.max_ammo} | CONTACTS: ${data.people} | LOCK: ${data.target}`;
@@ -1428,10 +1451,7 @@ def snapshot():
         job = enroll_job
         s["enroll"] = {"active": job is not None, "name": job["name"] if job else "",
                        "have": len(job["samples"]) if job else 0, "need": ENROLL_SAMPLES, "msg": enroll_msg}
-        if ULTRASONIC_AVAILABLE:
-            s["sonar"] = {n: round(v, 1) if v is not None else None for n, v in read_ultrasonic_map().items()}
-        else:
-            s["sonar"] = {}
+        s["sonar"] = {}
         return s
 
 
@@ -1630,6 +1650,20 @@ def car_control():
 def video_feed():
     return Response(gen_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
+@app.route("/toggle_auto_drive", methods=["POST"])
+def toggle_auto_drive():
+    with lock:
+        enabling = not app_state["auto_drive"]
+        if enabling and app_state["sys_mode"] != "auto":
+            return jsonify(error="Switch SYS to AUTO first"), 409
+        if enabling and not ULTRASONIC_AVAILABLE:
+            return jsonify(error="Ultrasonic sensors are unavailable"), 503
+        app_state["auto_drive"] = enabling
+
+    if not enabling:
+        car_command("S")
+    return "", 204
+
 
 # ---------------- main loop ----------------
 def tracking_loop():
@@ -1653,11 +1687,10 @@ def run_loop(cam, detector, recognizer):
     frame_idx = proc_idx = last_idx = 0
     stride = 2
     prev_mode = "manual"
+    camera_stop_until = 0.0
+    auto_drive_was_active = False
     fps, t_prev = 0.0, time.time()
     last_tune = last_down = time.time()
-    if target is not None:
-        error_x = tx - fcx
-        error_y = ty - fcy
 
     log("Tracking loop running.")
     first_frame = True
@@ -1710,9 +1743,7 @@ def run_loop(cam, detector, recognizer):
             publish(frame)
             continue
 
-        # --- AUTO MODE ---
-        if ULTRASONIC_AVAILABLE:
-            apply_ultrasonic_avoidance()
+        # --- AUTO MODE -- #
 
         process = frame_idx % stride == 0
         frame_idx += 1
@@ -2033,7 +2064,7 @@ def tracking_thread(pan=None):
     """Restarts the tracking loop if it ever crashes, and reports why."""
     while True:
         try:
-            tracking_loop(pan)
+            tracking_loop()
         except Exception as e:
             traceback.print_exc()
             msg = f"{type(e).__name__}: {e}" if not isinstance(e, RuntimeError) else str(e)
