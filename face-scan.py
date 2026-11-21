@@ -5,8 +5,17 @@ Setup:
     pip install flask opencv-python numpy        (on the Pi: sudo apt install python3-opencv python3-flask)
     python tank_hud.py   ->  open http://<pi-ip>:5000
 
+    Ultrasonic Pin Layout:
+        ULTRASONIC_PINS = {
+            "front": {"trig": 20, "echo": 21},
+            "left": {"trig": 19, "echo": 26},
+            "right": {"trig": 16, "echo": 5},
+            "back": {"trig": 6, "echo": 13},
+        connect VCC and GND to the main arduino power supply, as to not draw too much power from the RPI. 
+
 Wi-Fi hotspot (built in; run once, needs sudo, Raspberry Pi OS Bookworm or newer):
     sudo python3 tank_hud.py --setup-ap -s TankNet -C GB     # prints a random password
+    sudo python3 tank_hud.py --setup-ap -s TankNet -C GB -p "passwordhere" Lets you choose your network password (minimum of 7 characters)
     sudo python3 tank_hud.py --setup-ap -i wlan1             # later: host it on a USB antenna
     sudo python3 tank_hud.py --remove-ap                     # undo, restore your old Wi-Fi
     then join the network and open http://10.42.0.1:5000
