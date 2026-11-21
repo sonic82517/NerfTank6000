@@ -1701,9 +1701,6 @@ def run_loop(cam, detector, recognizer):
     auto_drive_was_active = False
     fps, t_prev = 0.0, time.time()
     last_tune = last_down = time.time()
-    if target is not None:
-        error_x = tx - fcx
-        error_y = ty - fcy
 
     log("Tracking loop running.")
     first_frame = True
