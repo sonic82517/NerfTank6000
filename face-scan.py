@@ -273,7 +273,7 @@ ULTRASONIC_AVAILABLE = False
 
 # LED STRIP #
 LED_COUNT = 15
-LED_PIN = 23                
+LED_PIN = 18                
 LED_FREQ_HZ = 800_000
 LED_DMA = 10
 LED_BRIGHTNESS = 64          # 0-255; keep moderate
