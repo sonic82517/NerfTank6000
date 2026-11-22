@@ -1819,6 +1819,12 @@ def run_loop(cam, detector, recognizer):
                 t.coast[1] += vy
 
         confirmed = [t for t in tracks if t.confirmed]
+        
+        with lock:
+            auto_drive_enabled = app_state["auto_drive"]
+
+        if auto_drive_enabled:
+            apply_ultrasonic_avoidance(face_seen=bool(confirmed))
 
         # click on the video -> lock that contact
         if click is not None:
