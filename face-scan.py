@@ -64,7 +64,10 @@ try:   # print immediately, even under systemd, so the terminal / journal is nev
     sys.stderr.reconfigure(line_buffering=True)
 except Exception:
     pass
-
+try:
+    from rpi_ws281x import PixelStrip, Color, ws
+except ImportError:
+    PixelStrip = Color = ws = None
 try:
     import RPi.GPIO as GPIO
 except Exception:
@@ -265,6 +268,21 @@ ULTRASONIC_PINS = {
 ULTRASONIC_CLEARANCE_CM = 25.0
 ULTRASONIC_TIMEOUT = 0.05
 ULTRASONIC_AVAILABLE = False
+
+
+
+# LED STRIP #
+LED_COUNT = 15
+LED_PIN = 23                
+LED_FREQ_HZ = 800_000
+LED_DMA = 10
+LED_BRIGHTNESS = 64          # 0-255; keep moderate
+LED_INVERT = False
+LED_CHANNEL = 0
+
+status_led = None
+_status_led_color = None
+_led_warning_logged = False
 
 if GPIO is not None:
     try:
@@ -568,6 +586,70 @@ def set_error(src, msg):
         app_state["error"] = " | ".join(f"{k}: {v}" for k, v in ERRORS.items())
     if changed:
         log(f"ERROR [{src}] {msg}")
+
+def _write_status_led(rgb):
+    """Fill all 15 LEDs with an RGB tuple. Safe to call if the library is absent."""
+    global _status_led_color, _led_warning_logged
+    if status_led is None or Color is None:
+        return
+    try:
+        color = Color(*rgb)
+        for i in range(LED_COUNT):
+            status_led.setPixelColor(i, color)
+        status_led.show()
+        _status_led_color = rgb
+    except Exception as exc:
+        if not _led_warning_logged:
+            log(f"WS2812 LED write failed: {exc}")
+            _led_warning_logged = True
+
+
+def set_status_led(state):
+    """Enemy tracking=red; AUTO=green; standby/manual=blue."""
+    colors = {
+        "enemy": (255, 0, 0),
+        "auto": (0, 0, 255),  # RGB blue
+        "standby": (0, 0, 255),
+    }
+    rgb = colors.get(state, colors["standby"])
+    if rgb != _status_led_color:
+        _write_status_led(rgb)
+
+
+def flash_status_led(flashes=2, seconds=0.18):
+    """Brief white flashes for power-on and shutdown."""
+    if status_led is None:
+        return
+    for _ in range(flashes):
+        _write_status_led((255, 255, 255))
+        time.sleep(seconds)
+        _write_status_led((0, 0, 0))
+        time.sleep(seconds)
+    # Force the next state update to repaint.
+    global _status_led_color
+    _status_led_color = None
+
+
+def init_status_led():
+    """Initialize the strip; missing hardware/library won't stop the HUD."""
+    global status_led
+    if PixelStrip is None or ws is None:
+        log("WS2812 disabled: install the rpi_ws281x library to enable the LED strip.")
+        return
+
+    try:
+        status_led = PixelStrip(
+            LED_COUNT, LED_PIN, LED_FREQ_HZ, LED_DMA,
+            LED_INVERT, LED_BRIGHTNESS, LED_CHANNEL,
+            strip_type=ws.WS2811_STRIP_GRB,
+        )
+        status_led.begin()
+        flash_status_led()           # white flash on startup
+        set_status_led("standby")
+        log(f"WS2812 status strip ready: {LED_COUNT} LEDs on BCM GPIO{LED_PIN}")
+    except Exception as exc:
+        status_led = None
+        log(f"WS2812 initialization failed; continuing without LEDs: {exc}")
 
 
 def clear_error(src):
@@ -1750,6 +1832,7 @@ def run_loop(cam, detector, recognizer):
             draw_enroll_overlay(frame, job)
             with lock:
                 app_state.update(fps=round(fps, 1), people=0, target="Manual", contacts=[])
+            set_status_led("standby")
             publish(frame)
             continue
 
@@ -1819,6 +1902,9 @@ def run_loop(cam, detector, recognizer):
                 t.coast[1] += vy
 
         confirmed = [t for t in tracks if t.confirmed]
+        enemy_tracking = any(role(t, db)[0] == "enemy" for t in confirmed)
+        set_status_led("enemy" if enemy_tracking else "auto")
+        
         
         with lock:
             auto_drive_enabled = app_state["auto_drive"]
@@ -2124,6 +2210,7 @@ def main():
     finally:
         if lcd:
             lcd.show(["TANK HUD", "stopped", "", ""])
+            flash_status_led()   
         pan.close()
 
 
