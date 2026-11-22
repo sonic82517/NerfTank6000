@@ -1460,7 +1460,8 @@ def snapshot():
         job = enroll_job
         s["enroll"] = {"active": job is not None, "name": job["name"] if job else "",
                        "have": len(job["samples"]) if job else 0, "need": ENROLL_SAMPLES, "msg": enroll_msg}
-        s["sonar"] = {}
+        with sonar_cache_lock:
+            s["sonar"] = dict(sonar_cache)
         return s
 
 
@@ -2096,6 +2097,7 @@ def main():
     # Start tracking once, passing the pan controller.
     threading.Thread(target=tracking_thread, args=(pan,), daemon=True).start()
     threading.Thread(target=_car_safety_watchdog, daemon=True, name="car-safety-watchdog").start()
+    threading.Thread(target=sonar_reader_loop, daemon=True, name="ultrasonic-reader").start()
 
     ips = get_ips()
     log("Web interface on:" if ips else "Web interface on port %d (no network address yet)" % PORT)
