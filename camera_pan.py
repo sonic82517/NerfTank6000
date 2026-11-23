@@ -20,9 +20,9 @@ try:
 except ImportError:
     GPIO = None
 
-SERVO_PIN = 18          # BCM numbering; physical pin 12
+SERVO_PIN = 23          # BCM numbering; physical pin 12
 SERVO_MIN_ANGLE = 35.0  # conservative software limits; calibrate for your mount
-SERVO_MAX_ANGLE = 145.0
+SERVO_MAX_ANGLE = 180.0
 SERVO_CENTER_ANGLE = 90.0
 SERVO_MIN_DUTY = 2.5
 SERVO_MAX_DUTY = 12.5
